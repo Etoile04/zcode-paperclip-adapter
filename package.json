@@ -1,0 +1,51 @@
+{
+  "name": "zcode-paperclip-adapter",
+  "version": "0.1.0",
+  "description": "Paperclip adapter for ZCode (GLM coding agent) — run ZCode as a managed employee in a Paperclip company",
+  "type": "module",
+  "license": "MIT",
+  "author": {
+    "name": "Etoile04"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Etoile04/zcode-paperclip-adapter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Etoile04/zcode-paperclip-adapter/issues"
+  },
+  "homepage": "https://github.com/Etoile04/zcode-paperclip-adapter#readme",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "paperclip": {
+    "adapterUiParser": "1.0.0"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./server": "./dist/server/index.js",
+    "./ui": "./dist/ui/index.js",
+    "./cli": "./dist/cli/index.js",
+    "./ui-parser": "./dist/ui-parser.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "^0.3.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
