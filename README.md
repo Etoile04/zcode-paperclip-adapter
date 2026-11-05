@@ -74,15 +74,15 @@ curl -X POST "$PAPERCLIP_API_URL/api/adapters/zcode_local/reload" -H "Authorizat
 | Field | Default | Description |
 |---|---|---|
 | `cwd` | — (required) | Working directory; ignored when Paperclip resolves an execution workspace for the run. Sessions resume only when the cwd is stable or unknown. |
-| `zcodeCommand` | auto-detect | Explicit zcode / zcode-agent binary path. |
-| `mode` | `yolo` | zcode permission mode: `yolo`, `build`, `edit`, `plan`. |
+| `zcodeCommand` | auto-detect | Explicit zcode / zcode-agent binary path. Must be an absolute path to an existing, executable file; the bare name `zcode` is accepted and resolved from `PATH`. Anything else fails the run. |
+| `mode` | `yolo` | zcode permission mode: `yolo`, `build`, `edit`, `plan`. An unknown value fails the run; only an unset value falls back to the default. |
 | `timeoutSec` | `1800` | Hard timeout per run. |
 | `promptTemplate` | Paperclip canonical contract | Mustache-style template over `{agent, company, run, context}`. |
 | `bootstrapPrompt` | — | One-off template rendered only on the first (non-resumed) run. |
 | `instructionsFilePath` | — | File appended to the prompt on fresh sessions only. |
 | `disallowedTools` | — | Tool names for `--disallowed-tools` (comma/space list). |
 | `extraArgs` | — | Extra CLI flags (whitespace-separated). |
-| `env` / `envVars` | — | Extra child env vars (object, or `K=V` lines). |
+| `env` / `envVars` | — | Extra child env vars (object, or `K=V` lines). Entries that would override a protected variable are dropped and reported in the run's command notes. |
 | `persistSession` | `true` | Resume the zcode session across heartbeats. |
 | `maxTurnsPerRun` | — | Accepted for form compatibility; the zcode CLI has no `--max-turns`, only `timeoutSec` applies. |
 
@@ -97,6 +97,13 @@ Host support matrix: these capability signals are read by Paperclip hosts that s
 
 ## Behavior notes & limits
 
+- **Adapter-side security posture (defence in depth).** The adapter refuses to act on configuration it cannot trust, and a refused value fails the run (`errorCode: invalid_adapter_config`) instead of being ignored or degraded into something more permissive:
+  - `zcodeCommand` must be an absolute path to an existing, executable file; the bare name `zcode` is resolved from `PATH` as before. A relative path, a missing file, a directory, a non-executable file, and any other bare command name are all rejected.
+  - `ZCODE_SERVER_RUNTIME_ROOT` (the directory holding the `node` binary that runs the ZCode app bundle) must be an absolute path without a `..` segment. An invalid value is an explicit error, not a silent fallback to `~/.zcode/server/node`.
+  - `env` / `envVars` entries may never override `ZCODE_SERVER_RUNTIME_ROOT`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `NODE_OPTIONS`, `PATH` or `HOME`. Offending entries are dropped and listed in the run's command notes; the rest of the config still applies.
+  - `mode` must be one of `yolo`, `build`, `edit`, `plan`. An unknown value fails the run rather than falling back to `yolo`.
+
+  This layer raises the bar; it is not a sandbox. An agent that can write files can still point `zcodeCommand` at an executable it wrote, so the authoritative control is server-side: the host must refuse to let an agent write host-executed adapter settings at all.
 - **Model selection is machine-wide** (no `--model` flag). The `models` metadata is informational.
 - **Prompt is passed via argv**, not stdin (zcode has no stdin prompt mode). Very large prompts (>250 KB single-arg limit) would fail; heartbeat prompts are normally far below that.
 - **Resume**: prior session id is taken from `runtime.sessionParams` with a fallback to the legacy `runtime.sessionId`; a known-different cwd forces a fresh session. If zcode reports `Session not found`, the adapter retries once without `--resume` and clears the stored session.

@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { ADAPTER_TYPE } from "../shared/constants.js";
 import { resolveZcodeBinary } from "./detect-binary.js";
+import { AdapterConfigError } from "./security.js";
 
 function statusFor(checks: AdapterEnvironmentCheck[]): "pass" | "warn" | "fail" {
   if (checks.some((c) => c.level === "error")) return "fail";
@@ -64,7 +65,18 @@ export async function testEnvironment(
   }
 
   const zcodeCommand = asString(ctx.config["zcodeCommand"], "");
-  const binary = resolveZcodeBinary(zcodeCommand || undefined, process.env);
+  let binary;
+  try {
+    binary = resolveZcodeBinary(zcodeCommand || undefined, process.env);
+  } catch (error) {
+    if (!(error instanceof AdapterConfigError)) throw error;
+    checks.push({
+      code: "zcode_command_invalid",
+      level: "error",
+      message: `zcodeCommand was rejected: ${error.message}`,
+      hint: "Point zcodeCommand at the absolute path of an existing, executable zcode binary.",
+    });
+  }
   if (binary) {
     checks.push({
       code: "zcode_resolved",
