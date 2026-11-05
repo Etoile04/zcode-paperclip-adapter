@@ -66,7 +66,7 @@ function contextTrimmedString(context: Record<string, unknown>, ...keys: string[
   return null;
 }
 
-function buildChildEnv(
+export function buildChildEnv(
   ctx: AdapterExecutionContext,
   config: Record<string, unknown>,
 ): { env: Record<string, string>; workspaceContext: Record<string, unknown> } {

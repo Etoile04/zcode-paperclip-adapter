@@ -52,6 +52,12 @@ export function createServerAdapter(): ZcodeServerAdapterModule {
     testEnvironment,
     sessionCodec,
     supportsInstructionsBundle: true,
+    // The host mints a per-run local agent JWT (HS256, signing key derived
+    // per instance + company) and injects it into the child process
+    // environment as PAPERCLIP_API_KEY — see execute.ts buildChildEnv().
+    // Without this flag the host passes ctx.authToken === null, the child
+    // gets no Paperclip credential at all, and every /api call answers 401.
+    supportsLocalAgentJwt: true,
     listSkills: listZcodeSkills,
     syncSkills: syncZcodeSkills,
     models: ZCODE_MODELS.map((model) => ({ id: model.id, label: model.label })),
