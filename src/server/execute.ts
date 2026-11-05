@@ -18,15 +18,18 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import {
   ADAPTER_TYPE,
-  DEFAULT_MODE,
   DEFAULT_TIMEOUT_SEC,
   MAX_TIMEOUT_SEC,
   MIN_TIMEOUT_SEC,
-  ZCODE_MODES,
   type ZcodeMode,
 } from "../shared/constants.js";
-import { resolveZcodeBinary } from "./detect-binary.js";
+import { resolveZcodeBinary, type ResolvedZcodeBinary } from "./detect-binary.js";
 import { firstErrorLine, isUnknownSessionStderr, summarizeStdout } from "./parse.js";
+import {
+  AdapterConfigError,
+  isProtectedEnvName,
+  resolveMode,
+} from "./security.js";
 import { ensureZcodeSkillsSynced, ZCODE_SKILLS_HOME } from "./skills.js";
 import {
   applyPaperclipWorkspaceEnv,
@@ -44,11 +47,6 @@ interface ZcodeSessionParams {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
-}
-
-function resolveMode(value: string | undefined): ZcodeMode {
-  const candidate = (value ?? "").trim().toLowerCase();
-  return (ZCODE_MODES as readonly string[]).includes(candidate) ? (candidate as ZcodeMode) : DEFAULT_MODE;
 }
 
 function splitArgs(extraArgs: string): string[] {
@@ -69,7 +67,12 @@ function contextTrimmedString(context: Record<string, unknown>, ...keys: string[
 export function buildChildEnv(
   ctx: AdapterExecutionContext,
   config: Record<string, unknown>,
-): { env: Record<string, string>; workspaceContext: Record<string, unknown> } {
+): {
+  env: Record<string, string>;
+  workspaceContext: Record<string, unknown>;
+  /** Protected env names that were dropped from the adapter config. */
+  droppedEnvNames: string[];
+} {
   const context = ctx.context ?? {};
   const workspaceContext = parseObject(context["paperclipWorkspace"]);
 
@@ -114,13 +117,31 @@ export function buildChildEnv(
     agentHome: asString(workspaceContext["agentHome"], "") || null,
   });
 
+  // Adapter-supplied environment entries may never shadow the variables that
+  // decide which binaries and which loader the child process uses — see
+  // PROTECTED_ENV_NAMES. Chosen policy: DROP THE OFFENDING ENTRY, keep the
+  // rest of the config usable, and report what was dropped (the run's command
+  // notes carry the list) so the drop is never silent.
+  const droppedEnvNames: string[] = [];
+
   for (const [name, value] of Object.entries(envConfig)) {
+    if (isProtectedEnvName(name)) {
+      droppedEnvNames.push(name);
+      continue;
+    }
     if (typeof value === "string") env[name] = value;
     else if (typeof value === "number" || typeof value === "boolean") env[name] = String(value);
   }
   for (const line of asStringArray(config["envVars"])) {
     const eq = line.indexOf("=");
-    if (eq > 0) env[line.slice(0, eq)] = line.slice(eq + 1);
+    if (eq > 0) {
+      const name = line.slice(0, eq);
+      if (isProtectedEnvName(name)) {
+        droppedEnvNames.push(name);
+        continue;
+      }
+      env[name] = line.slice(eq + 1);
+    }
   }
 
   if (!hasExplicitApiKey && ctx.authToken) {
@@ -133,7 +154,7 @@ export function buildChildEnv(
     ),
   );
 
-  return { env: runtimeEnv, workspaceContext };
+  return { env: runtimeEnv, workspaceContext, droppedEnvNames };
 }
 
 export function buildPrompt(input: {
@@ -211,7 +232,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const config = ctx.config ?? {};
   const context = ctx.context ?? {};
 
-  const { env, workspaceContext } = buildChildEnv(ctx, config);
+  const { env, workspaceContext, droppedEnvNames } = buildChildEnv(ctx, config);
+
+  // A configuration value the adapter refuses to act on fails the run loudly
+  // (fail-closed). It is never silently ignored, and it never degrades into
+  // a different command or a more permissive mode. This runs before any side
+  // effect (no directory is created, no process is spawned) for a rejected
+  // configuration.
+  let binary: ResolvedZcodeBinary | null = null;
+  let mode: ZcodeMode;
+  try {
+    binary = resolveZcodeBinary(asString(config["zcodeCommand"], "") || undefined, process.env);
+    mode = resolveMode(config["mode"]);
+  } catch (error) {
+    if (error instanceof AdapterConfigError) {
+      return failedResult(
+        `zcode adapter configuration rejected: ${error.message}`,
+        "invalid_adapter_config",
+      );
+    }
+    throw error;
+  }
+  const command = binary?.command ?? "zcode";
+  const baseArgs = binary?.args ?? [];
 
   const workspaceSource = asString(workspaceContext["source"], "");
   const workspaceCwd = asString(workspaceContext["cwd"], "");
@@ -226,11 +269,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // runChildProcess will surface the spawn error if the directory is unusable.
   }
 
-  const binary = resolveZcodeBinary(asString(config["zcodeCommand"], "") || undefined, process.env);
-  const command = binary?.command ?? "zcode";
-  const baseArgs = binary?.args ?? [];
-
-  const mode = resolveMode(asString(config["mode"], ""));
   const timeoutSec = clamp(
     asNumber(config["timeoutSec"], DEFAULT_TIMEOUT_SEC),
     MIN_TIMEOUT_SEC,
@@ -276,6 +314,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   if (binary) commandNotes.push(`binary resolved from ${binary.source}`);
   else commandNotes.push("no explicit zcode binary found; falling back to `zcode` on PATH");
+  if (droppedEnvNames.length > 0) {
+    commandNotes.push(
+      `dropped protected env entries from adapter config (not overridable): ${[...new Set(droppedEnvNames)].join(", ")}`,
+    );
+  }
   if (maxTurns > 0) {
     commandNotes.push(`maxTurnsPerRun=${maxTurns} requested but the zcode CLI has no --max-turns support; only the ${timeoutSec}s timeout applies.`);
   }

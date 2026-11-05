@@ -80,8 +80,8 @@ Runs the ZCode CLI (GLM coding agent, the agent runtime shipped with ZCode Deskt
 ## Core fields
 
 - \`cwd\` (required): working directory for the agent; sessions resume only when it stays stable.
-- \`zcodeCommand\` (optional): explicit zcode/zcode-agent binary path. Auto-detected otherwise (~/.zcode/server/agents/glm/zcode-agent, then the app bundle, then PATH).
-- \`mode\` (optional): zcode permission mode — yolo (default), build, edit, or plan.
+- \`zcodeCommand\` (optional): explicit zcode/zcode-agent binary path. Auto-detected otherwise (~/.zcode/server/agents/glm/zcode-agent, then the app bundle, then PATH). When set, it must be an absolute path to an existing, executable file; the bare name \`zcode\` is also accepted and resolved from PATH. Anything else is rejected and the run fails.
+- \`mode\` (optional): zcode permission mode — yolo (default), build, edit, or plan. An unrecognised value fails the run instead of falling back to yolo.
 - \`timeoutSec\` (optional): hard timeout per run, default 1800.
 - \`promptTemplate\` (optional): Mustache-style template rendered with {agent}, {company}, {run}, {context}. Defaults to Paperclip's canonical agent contract (issue dispositions, interactions API). The full per-run prompt is assembled from the Paperclip wake payload, session handoff, task markdown, this template, and your instructions file — mirroring claude_local.
 - \`bootstrapPrompt\` (optional): one-off template rendered only on the first (non-resumed) run.
@@ -89,7 +89,7 @@ Runs the ZCode CLI (GLM coding agent, the agent runtime shipped with ZCode Deskt
 - \`maxTurnsPerRun\` (optional): accepted for form compatibility but the zcode CLI has no --max-turns flag; only timeoutSec bounds the run.
 - \`disallowedTools\` (optional): tool names passed to --disallowed-tools (e.g. ["Bash", "WebSearch"]).
 - \`extraArgs\` (optional): additional CLI flags appended verbatim (whitespace-separated).
-- \`env\` / \`envVars\` (optional): extra environment variables for the child process.
+- \`env\` / \`envVars\` (optional): extra environment variables for the child process. Entries that would override ZCODE_SERVER_RUNTIME_ROOT, LD_*, DYLD_*, NODE_OPTIONS, PATH or HOME are dropped and reported in the run's command notes.
 - \`persistSession\` (optional, default true): resume the zcode session across runs; set false for a fresh session every run.
 
 ## Model
