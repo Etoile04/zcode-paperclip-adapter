@@ -21,8 +21,16 @@
  *   PAPERCLIP_API_URL=<paperclip base url> \
  *   node scripts/verify-local-agent-jwt.mjs
  *
- * The secret is never written to disk and never printed: only the JWT's
- * decoded claim set (non-secret metadata) and the HTTP status are reported.
+ * Secret hygiene:
+ *   - The signing SECRET is never written to disk and never printed. It is
+ *     stripped from the environment handed to the child process, so it cannot
+ *     reach the child's environment dump.
+ *   - The minted TOKEN is a credential too: it lands in the temporary
+ *     directory as part of that dump, and the directory is removed in a
+ *     `finally` block, so it does not survive the script — including when a
+ *     check throws.
+ *   - Only the JWT's decoded claim set (non-secret metadata) and the HTTP
+ *     status are printed.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
@@ -52,6 +60,11 @@ function base64UrlEncode(value) {
 /**
  * Mint a local agent JWT exactly the way the server's
  * `createLocalAgentJwt()` does (server/src/agent-auth-jwt.ts).
+ *
+ * One deliberate difference: `responsible_user_id` is `null` here, where a
+ * real run token carries the responsible user's id. The claim set and the
+ * signing key are otherwise identical to the server's, so the token is
+ * peer-scoped — it identifies this agent, it does not escalate it.
  */
 function createLocalAgentJwt({ masterSecret, agentId, companyId, adapterType, runId, instanceId, ttlSeconds }) {
   const now = Math.floor(Date.now() / 1000);
@@ -223,62 +236,77 @@ const workDir = mkdtempSync(path.join(tmpdir(), "zcode-local-jwt-verify-"));
 const envDumpPath = path.join(workDir, "child-env.json");
 const stubBinaryPath = path.join(workDir, "zcode-stub");
 
-// The stub behaves like the zcode CLI for the two things this check needs:
-// it records the environment it was handed, and it emits a minimal valid
-// stream-json `result` event so the adapter can finish the run.
-writeFileSync(
-  stubBinaryPath,
-  `#!/bin/sh
+try {
+  // The stub behaves like the zcode CLI for the two things this check needs:
+  // it records the environment it was handed, and it emits a minimal valid
+  // stream-json `result` event so the adapter can finish the run.
+  writeFileSync(
+    stubBinaryPath,
+    `#!/bin/sh
 node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify(process.env))' ${JSON.stringify(envDumpPath)}
 printf '%s\\n' '{"type":"result","sessionId":"sess_verify_local_jwt","response":"done","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}'
 `,
-);
-chmodSync(stubBinaryPath, 0o755);
-
-const childEnv = {};
-try {
-  const result = await adapter.execute({
-    runId,
-    agent: {
-      id: agentId,
-      companyId,
-      name: "Local JWT Verify Agent",
-      adapterType: "zcode_local",
-      adapterConfig: {},
-    },
-    runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
-    config: { cwd: workDir, zcodeCommand: stubBinaryPath, mode: "yolo", timeoutSec: 60 },
-    context: {},
-    onLog: async () => {},
-    authToken: token,
-  });
-  Object.assign(childEnv, JSON.parse(readFileSync(envDumpPath, "utf8")));
-  check(
-    "adapter execute() completes with the stub binary",
-    result.exitCode === 0,
-    `exitCode=${result.exitCode}`,
   );
-} catch (err) {
-  check("adapter execute() completes with the stub binary", false, String(err));
+  chmodSync(stubBinaryPath, 0o755);
+
+  // The adapter merges the whole host environment into the child's, so the
+  // signing secret would otherwise be inherited by the stub and land in the
+  // environment dump on disk. The child never needs it — drop it before the
+  // child runs. (`masterSecret` was already read into a variable above.)
+  delete process.env["PAPERCLIP_AGENT_JWT_SECRET"];
+
+  const childEnv = {};
+  try {
+    const result = await adapter.execute({
+      runId,
+      agent: {
+        id: agentId,
+        companyId,
+        name: "Local JWT Verify Agent",
+        adapterType: "zcode_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: workDir, zcodeCommand: stubBinaryPath, mode: "yolo", timeoutSec: 60 },
+      context: {},
+      onLog: async () => {},
+      authToken: token,
+    });
+    Object.assign(childEnv, JSON.parse(readFileSync(envDumpPath, "utf8")));
+    check(
+      "adapter execute() completes with the stub binary",
+      result.exitCode === 0,
+      `exitCode=${result.exitCode}`,
+    );
+  } catch (err) {
+    check("adapter execute() completes with the stub binary", false, String(err));
+  }
+
+  check(
+    "child process env carries PAPERCLIP_API_KEY",
+    typeof childEnv["PAPERCLIP_API_KEY"] === "string" && childEnv["PAPERCLIP_API_KEY"].length > 0,
+    childEnv["PAPERCLIP_API_KEY"] ? "present" : "absent",
+  );
+  check(
+    "child process env carries exactly the host-minted token",
+    childEnv["PAPERCLIP_API_KEY"] === token,
+    "byte-identical to the host value",
+  );
+  check(
+    "child process env carries the run id",
+    childEnv["PAPERCLIP_RUN_ID"] === runId,
+    childEnv["PAPERCLIP_RUN_ID"] ?? "absent",
+  );
+  check(
+    "child process env does not carry the signing secret",
+    childEnv["PAPERCLIP_AGENT_JWT_SECRET"] === undefined,
+    "stripped before the child ran",
+  );
+} finally {
+  // Always remove the temp dir — including the environment dump, which holds
+  // the minted token in plaintext — even when a check throws.
+  rmSync(workDir, { recursive: true, force: true });
 }
-
-check(
-  "child process env carries PAPERCLIP_API_KEY",
-  typeof childEnv["PAPERCLIP_API_KEY"] === "string" && childEnv["PAPERCLIP_API_KEY"].length > 0,
-  childEnv["PAPERCLIP_API_KEY"] ? "present" : "absent",
-);
-check(
-  "child process env carries exactly the host-minted token",
-  childEnv["PAPERCLIP_API_KEY"] === token,
-  "byte-identical to the host value",
-);
-check(
-  "child process env carries the run id",
-  childEnv["PAPERCLIP_RUN_ID"] === runId,
-  childEnv["PAPERCLIP_RUN_ID"] ?? "absent",
-);
-
-rmSync(workDir, { recursive: true, force: true });
 
 console.log("");
 if (failures.length > 0) {
