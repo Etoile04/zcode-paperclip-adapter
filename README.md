@@ -100,7 +100,7 @@ Host support matrix: these capability signals are read by Paperclip hosts that s
 - **Model selection is machine-wide** (no `--model` flag). The `models` metadata is informational.
 - **Prompt is passed via argv**, not stdin (zcode has no stdin prompt mode). Very large prompts (>250 KB single-arg limit) would fail; heartbeat prompts are normally far below that.
 - **Resume**: prior session id is taken from `runtime.sessionParams` with a fallback to the legacy `runtime.sessionId`; a known-different cwd forces a fresh session. If zcode reports `Session not found`, the adapter retries once without `--resume` and clears the stored session.
-- **Auth token**: the adapter does not set `supportsLocalAgentJwt` (the local-JWT path hung one host build during testing); Paperclip falls back to agent API-key auth, which worked in end-to-end testing.
+- **Auth token**: the adapter declares `supportsLocalAgentJwt: true`, so the host mints a per-run local agent JWT (HS256, signing key derived per instance + company) and injects it into the child process environment as `PAPERCLIP_API_KEY`. The flag is declared on the package **entry** module (`src/index.ts`) as well as on the server module (`src/server/index.ts`): the host hot-reloads the entry file only — re-importing `dist/index.js` with a cache-busting query string — while the entry's own imports stay in the ESM cache, so a capability that lived in `src/server/index.ts` alone would need a full Paperclip restart before the host observed it. After `npm run build`, `POST /api/adapters/zcode_local/reload` is therefore enough to activate the credential — no Paperclip restart required. An operator-supplied `env.PAPERCLIP_API_KEY` in the adapter config still wins over the injected token.
 - **Usage/billing**: token usage comes from the final `result` event; `billingType` is inferred from the provider id (`coding-plan`/`start-plan` → `subscription`).
 - Some documented-but-unimplemented zcode flags (`--max-turns`, `--allowed-tools`, `--settings`, `--permission-mode`) are rejected by the 0.16.5 parser — do not pass them via `extraArgs`.
 
@@ -111,8 +111,11 @@ npm install
 npm run build     # tsc → dist/
 npm test          # vitest, replays real fixtures from fixtures/
 node scripts/smoke.mjs [cwd]          # drive execute() + testEnvironment() directly
+node scripts/verify-local-agent-jwt.mjs   # prove the child env carries a usable Paperclip credential
 PC_TOKEN=<admin key> node scripts/replay-log.mjs <runId>   # replay a run log through the ui-parser
 ```
+
+`scripts/verify-local-agent-jwt.mjs` reads `PAPERCLIP_AGENT_JWT_SECRET` and `PAPERCLIP_API_URL` from the environment (never from the repo), mints a local agent JWT with the server's own key derivation, asserts the live API accepts it (`GET /api/agents/me` → 200), and then drives the adapter's real `execute()` against a stub binary to confirm the child process environment carries exactly that token as `PAPERCLIP_API_KEY`. Because the target is normally a loopback Paperclip instance, the script requires `PAPERCLIP_VERIFY_ALLOW_PRIVATE=1` to permit a private/loopback host.
 
 `fixtures/` contains real captured stream-json output (success / invalid-resume / valid-resume) that backs the parser tests.
 
